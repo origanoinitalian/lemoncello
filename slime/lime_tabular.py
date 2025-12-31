@@ -12,7 +12,8 @@ import scipy as sp
 import sklearn
 import sklearn.preprocessing
 from sklearn.utils import check_random_state
-from pyDOE2 import lhs
+#from pyDOE2 import lhs to be modernized:
+from scipy.stats import qmc
 from scipy.stats.distributions import norm
 
 from lime.discretize import QuartileDiscretizer
@@ -780,8 +781,8 @@ class LimeTabularExplainer(object):
                                                 ).reshape(num_samples, num_cols)
                 data = np.array(data)
             elif sampling_method == 'lhs':
-                data = lhs(num_cols, samples=num_samples
-                           ).reshape(num_samples, num_cols)
+                sampler = qmc.LatinHypercube(d=num_cols, seed=self.random_state)    #modernization using quasi-Monte Carlo sampling from scipy.stats
+                data = sampler.random(n=num_samples)
                 means = np.zeros(num_cols)
                 stdvs = np.array([1]*num_cols)
                 for i in range(num_cols):
