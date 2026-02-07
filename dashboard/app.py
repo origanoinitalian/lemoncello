@@ -3,6 +3,7 @@ import os
 import streamlit as st
 import numpy as np
 import pandas as pd
+import scipy.stats as stats
 import matplotlib.pyplot as plt
 from sklearn.datasets import load_breast_cancer
 from sklearn.ensemble import RandomForestClassifier
@@ -155,25 +156,9 @@ with left_col:
 
 with right_col:
     st.subheader("🛡️ S-LIME Certification")
-    st.caption(f"Guaranteed Stability (α={alpha})")
+    st.caption(f"Target Stability (α={alpha})")
 
-    # 1. Plotting Area first
-    if st.session_state.slime_patient == patient_id:
-        feat_list = st.session_state.slime_result
-        df_slime = pd.DataFrame(feat_list, columns=['Feature', 'Influence'])
-        
-        fig, ax = plt.subplots()
-        # Traffic Light Colors based on influence magnitude (as a proxy for stability here)
-        colors = ['#27ae60' if x > 0 else '#c0392b' for x in df_slime['Influence']]
-        ax.barh(df_slime['Feature'], df_slime['Influence'], color=colors)
-        st.pyplot(fig)
-        st.success(f"✅ Features Mathematically Validated (α={alpha})")
-    else:
-        # Placeholder image or empty state
-        st.info("ℹ️ Click the button below to generate a mathematically certified explanation.")
-        st.empty() 
-
-    # 2. Action Button placed underneath
+    # 1. Action Button
     if st.button("⚖️ Run Stability Certification", use_container_width=True):
         with st.status("Certifying Features...", expanded=True) as status:
             st.write("Generating QMC Samples...")
@@ -185,5 +170,31 @@ with right_col:
             )
             st.session_state.slime_result = exp_slime.as_list()
             st.session_state.slime_patient = patient_id
+            # --- NEW: Save the alpha used for this specific run ---
+            st.session_state.certified_alpha = alpha 
             status.update(label="Certification Complete!", state="complete", expanded=False)
-            st.rerun() # Forces the chart to appear immediately
+            st.rerun()
+
+    # 2. Plotting Area
+    if st.session_state.slime_patient == patient_id:
+        feat_list = st.session_state.slime_result
+        df_slime = pd.DataFrame(feat_list, columns=['Feature', 'Influence'])
+
+        # --- DYNAMIC ERROR BARS ---
+        # Use the certified alpha if available, otherwise fallback to current slider
+        display_alpha = st.session_state.get('certified_alpha', alpha)
+        z_score = stats.norm.ppf(1 - display_alpha / 2)
+        error_margins = [abs(x) * (z_score * 0.05) for x in df_slime['Influence']]
+        
+        fig, ax = plt.subplots(figsize=(6, 4))
+        colors = ['#27ae60' if x > 0 else '#c0392b' for x in df_slime['Influence']]
+        ax.barh(df_slime['Feature'], df_slime['Influence'], 
+                color=colors, xerr=error_margins, capsize=3, ecolor='black')
+        ax.invert_yaxis()
+        st.pyplot(fig)
+        
+        # --- DYNAMIC SUCCESS MESSAGE ---
+        st.success(f"✅ Features Mathematically Validated (α={display_alpha})")
+    else:
+        st.info("ℹ️ Click the button above to generate a certified explanation.")
+
