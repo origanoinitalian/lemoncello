@@ -42,6 +42,20 @@ def load_resources():
     X_train, X_test, y_train, y_test = train_test_split(
         data.data, data.target, train_size=0.80, random_state=42
     )
+
+    # --- INITIALIZE SESSION STATE ---
+    # We check if these keys exist; if not, we create them with default values.
+    if 'slime_patient' not in st.session_state:
+        st.session_state.slime_patient = -1
+
+    if 'slime_result' not in st.session_state:
+        st.session_state.slime_result = None
+
+    if 'slime_stability_test' not in st.session_state:
+        st.session_state.slime_stability_test = None
+
+    if 'last_alpha' not in st.session_state:
+        st.session_state.last_alpha = 0.05
     
     rf = RandomForestClassifier(n_estimators=500, random_state=42)
     rf.fit(X_train, y_train)
@@ -51,7 +65,8 @@ def load_resources():
         X_train,
         feature_names=data.feature_names,
         class_names=data.target_names,
-        discretize_continuous=True, 
+        discretize_continuous=True,
+        feature_selection='lasso_path', 
         verbose=False
     )
     return data, X_test, rf, explainer
@@ -81,84 +96,94 @@ probs = rf.predict_proba([patient_data])[0]
 prediction = data.target_names[np.argmax(probs)]
 confidence = np.max(probs)
 
-# --- SECTION: VITALS ---
-col1, col2 = st.columns([1, 3])
-with col1:
-    # Diagnosis Card
-    if prediction == 'malignant':
-        st.error(f"### {prediction.upper()}\nConfidence: **{confidence:.2%}**")
-    else:
-        st.success(f"### {prediction.upper()}\nConfidence: **{confidence:.2%}**")
-    
-    st.info(f"**Patient ID:** {patient_id}")
-
-with col2:
-    # Raw Data Peek
-    with st.expander("📋 View Patient Medical Records", expanded=False):
-        df = pd.DataFrame([patient_data], columns=data.feature_names)
-        st.dataframe(df)
+with st.container():
+    st.subheader("🏥 Model Global Prediction")
+    v1, v2, v3 = st.columns(3)
+    v1.metric("Diagnosis", prediction.upper())
+    v2.metric("Confidence", f"{confidence:.2%}")
+    v3.metric("Patient ID", f"#{patient_id}")
+    st.caption("These values are the direct output of the Random Forest classifier.")
 
 st.divider()
+st.header("🔍 Local Interpretability Analysis")
+st.info("The charts below attempt to explain the Model Prediction above using different sampling techniques.")
 
 # --- SECTION: EXPLANATIONS ---
 left_col, right_col = st.columns(2)
 
-# --- LEFT: STANDARD LIME (AUTO-RUNS) ---
-# We auto-run this because it is fast. This gives instant feedback.
+# PERSISTENT LIME LOGIC
+if 'last_lime_patient' not in st.session_state:
+    st.session_state.last_lime_patient = -1
+
+# Only run LIME if the patient actually changes
+if st.session_state.last_lime_patient != patient_id or submitted:
+    with st.spinner("Generating baseline..."):
+        exp = explainer.explain_instance(
+            patient_data, rf.predict_proba, num_features=num_features, num_samples=1000
+        )
+        st.session_state.lime_exp = exp.as_list()
+        st.session_state.last_lime_patient = patient_id
+
 with left_col:
-    st.subheader("📊 Standard LIME (Unstable)")
+    st.subheader("📊 Standard LIME")
+    st.caption("Baseline explanation (Fast but Unstable)")
     
-    # Run Standard LIME
-    exp = explainer.explain_instance(
-        patient_data, rf.predict_proba, num_features=num_features, num_samples=1000
-    )
-    
-    # Plotting
-    feat_list = exp.as_list()
-    features = [x[0] for x in feat_list]
-    scores = [x[1] for x in feat_list]
+    # 1. Plotting Area
+    feat_list = st.session_state.lime_exp
+    df_lime = pd.DataFrame(feat_list, columns=['Feature', 'Influence'])
     
     fig, ax = plt.subplots(figsize=(6, 4))
-    colors = ['green' if x > 0 else 'red' for x in scores]
-    ax.barh(features, scores, color=colors)
-    ax.set_title("Standard Explanation")
+    colors = ['#2ecc71' if x > 0 else '#e74c3c' for x in df_lime['Influence']]
+    ax.barh(df_lime['Feature'], df_lime['Influence'], color=colors)
+    ax.invert_yaxis() 
     st.pyplot(fig)
-    
-    st.warning("⚠️ Note: If you reload, these bars might shift due to sampling noise.")
 
-# --- RIGHT: S-LIME (BUTTON TRIGGERED) ---
-# We keep this manual because it is computationally heavy
-with right_col:
-    st.subheader("🛡️ S-LIME (Stabilized)")
-    
-    # Use session state to remember if we ran S-LIME for this specific patient
-    if 'slime_patient' not in st.session_state:
-        st.session_state.slime_patient = -1
+    # 2. Warning Logic (Now underneath the graph)
+    if 'prev_lime_exp' in st.session_state and st.session_state.last_lime_patient == patient_id:
+        current_features = set([x[0] for x in st.session_state.lime_exp])
+        prev_features = set([x[0] for x in st.session_state.prev_lime_exp])
         
-    # Button to trigger S-LIME
-    if st.button("Generate S-LIME Certification"):
-        with st.spinner(f"Running Stability Tests (Alpha={alpha})..."):
+        overlap = len(current_features.intersection(prev_features)) / len(current_features) if len(current_features) > 0 else 1.0
+        
+        if overlap < 1.0:
+            st.warning(f"⚠️ **Instability Detected:** Feature set shifted by {100*(1-overlap):.0f}% since last run.")
+        else:
+            st.success("✨ **Lucky Run:** Features remained consistent this time.")
+    
+    # Store for next run
+    st.session_state.prev_lime_exp = st.session_state.lime_exp
+
+with right_col:
+    st.subheader("🛡️ S-LIME Certification")
+    st.caption(f"Guaranteed Stability (α={alpha})")
+
+    # 1. Plotting Area first
+    if st.session_state.slime_patient == patient_id:
+        feat_list = st.session_state.slime_result
+        df_slime = pd.DataFrame(feat_list, columns=['Feature', 'Influence'])
+        
+        fig, ax = plt.subplots()
+        # Traffic Light Colors based on influence magnitude (as a proxy for stability here)
+        colors = ['#27ae60' if x > 0 else '#c0392b' for x in df_slime['Influence']]
+        ax.barh(df_slime['Feature'], df_slime['Influence'], color=colors)
+        st.pyplot(fig)
+        st.success(f"✅ Features Mathematically Validated (α={alpha})")
+    else:
+        # Placeholder image or empty state
+        st.info("ℹ️ Click the button below to generate a mathematically certified explanation.")
+        st.empty() 
+
+    # 2. Action Button placed underneath
+    if st.button("⚖️ Run Stability Certification", use_container_width=True):
+        with st.status("Certifying Features...", expanded=True) as status:
+            st.write("Generating QMC Samples...")
             exp_slime = explainer.slime(
                 patient_data, rf.predict_proba, 
                 num_features=num_features, 
                 num_samples=1000, 
-                alpha=alpha # Fixed: Now using the slider value!
+                alpha=alpha 
             )
-            # Save result to session state
             st.session_state.slime_result = exp_slime.as_list()
             st.session_state.slime_patient = patient_id
-
-    # If we have a result for THIS patient, show it
-    if st.session_state.slime_patient == patient_id:
-        feat_list = st.session_state.slime_result
-        features = [x[0] for x in feat_list]
-        scores = [x[1] for x in feat_list]
-        
-        fig, ax = plt.subplots(figsize=(6, 4))
-        colors = ['green' if x > 0 else 'red' for x in scores]
-        ax.barh(features, scores, color=colors)
-        ax.set_title(f"Stabilized Explanation (alpha={alpha})")
-        st.pyplot(fig)
-        st.success("✅ Certified Stable via Hypothesis Testing")
-    else:
-        st.info("👈 Click to verify stability.")
+            status.update(label="Certification Complete!", state="complete", expanded=False)
+            st.rerun() # Forces the chart to appear immediately
