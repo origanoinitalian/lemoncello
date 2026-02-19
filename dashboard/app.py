@@ -198,3 +198,15 @@ with right_col:
     else:
         st.info("ℹ️ Click the button above to generate a certified explanation.")
 
+st.divider()
+st.subheader("🏁 Performance & Reliability Summary")
+
+if st.session_state.slime_patient == patient_id:
+    # Data derived from your report findings
+    summary_data = {
+        "Metric": ["Avg. Execution Time", "Feature Stability (k=1)", "Sampling Method", "Mathematical Guarantee"],
+        "Standard LIME": ["~2 seconds", "53% - 73%", "Random Permutation", "None (Heuristic)"],
+        "S-LIME (Lemoncello)": ["~40 seconds", "73% - 93%", "Quasi-Monte Carlo (QMC)", "CLT Hypothesis Testing"]
+    }
+    st.table(pd.DataFrame(summary_data))
+    st.info("💡 **Insight:** While S-LIME requires more computation, it provides a 37% increase in primary feature stability, making it essential for high-stakes medical diagnostics.")
