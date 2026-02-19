@@ -496,68 +496,55 @@ def _lars_path_solver(
             else:
                 C = 0.
         else:
-            # not implemented when if positive is set to True
+            # S-LIME THESIS ALIGNMENT: Super-Scalar Coefficient Stability Logic
             if Cov.size:
                 if positive:
                     C_idx = np.argmax(Cov)
                 else:
                     C_idx = np.argmax(np.abs(Cov))
-                    if Cov.size > 1:
-                        C_idx_second = np.abs(Cov).argsort()[-2]
+                
+                # 1. Estimate Model Residuals (Noise)
+                # Ensure curr_residual is a clear vector
+                curr_residual = y - np.dot(X[:, active], coef[active]) if n_active > 0 else y
+                rss = np.sum(curr_residual**2)
+                
+                # 2. Calculate Standard Error (SE) 
+                # Formula: sigma_hat / sqrt(N)
+                # We use .item() to ensure we have a Python scalar float
+                sigma_val = rss / (n_samples - n_active - 1) if (n_samples - n_active - 1) > 0 else 1.0
+                sigma_hat = float(np.sqrt(sigma_val).item())
+                standard_error = float(sigma_hat / np.sqrt(n_samples))
 
-                        x1 = X.T[n_active + C_idx]
-                        x2 = X.T[n_active + C_idx_second]
+                # 3. Calculate T-statistic (Forced to scalar float)
+                # .item() pulls the value out of the NumPy array container
+                current_weight = float(np.abs(Cov[C_idx]).item() / n_samples)
+                test_stats = float(current_weight / (standard_error + 1e-9))
 
-                        residual = y - np.dot(X[:, :n_active], coef[active])
-                        u = np.array([np.dot(x1, residual), np.dot(x2, residual)]) / len(y) 
-                        cov = np.cov(x1 * residual, x2 * residual)
+                # 4. Scaling Logic (Ratio forced to scalar)
+                # We clean 'alpha' here to prevent the scalar conversion error
+                alpha_scalar = float(alpha.item() if hasattr(alpha, 'item') else alpha)
+                z_critical = float(stats.norm.ppf(1 - alpha_scalar / 2))
+                
+                new_n = n_samples
+                if test_stats < z_critical:
+                    # Scaling N based on the ratio of current T to target Z
+                    ratio = float(z_critical / (test_stats + 1e-9))
+                    new_n = int(n_samples * (ratio**2))
+                    new_n = min(new_n, n_samples * 2) # Safety cap
 
-                        new_n = len(y)
-                        if u[0] >= 0 and u[1] >= 0:
-                            test_stats = u[0] - u[1] - z_score * np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y))
-                            if test_stats < 0:
-                                z_alpha = (u[0] - u[1]) / np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y))
-                                new_n = new_n * (z_score / z_alpha) ** 2
-                        elif u[0] >= 0 and u[1] < 0:
-                            test_stats = u[0] + u[1] - z_score * np.sqrt(2 * (cov[0][0] + cov[1][1] + cov[0][1] + cov[1][0]) / len(y))
-                            if test_stats < 0:
-                                z_alpha = (u[0] + u[1]) / np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y))
-                                new_n = new_n * (z_score / z_alpha) ** 2
-                        elif u[0] < 0 and u[1] >= 0:
-                            test_stats = -(u[0] + u[1] + z_score * np.sqrt(2 * (cov[0][0] + cov[1][1] + cov[0][1] + cov[1][0]) / len(y)))
-                            if test_stats < 0:
-                                z_alpha = (-u[0] - u[1]) / np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y))
-                                new_n = new_n * (z_score / z_alpha) ** 2
-                        else:
-                            test_stats = -(u[0] - u[1] + z_score * np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y)))
-                            if test_stats < 0:
-                                z_alpha = (-u[0] + u[1]) / np.sqrt(2 * (cov[0][0] + cov[1][1] - cov[0][1] - cov[1][0]) / len(y))
-                                new_n = new_n * (z_score / z_alpha) ** 2
+                # 5. Store 3 columns for the Dashboard
+                test_result[n_active + 1] = [test_stats, new_n, standard_error]
 
-                        test_result[n_active + 1] = [test_stats, new_n]
-
-                        if testing_verbose:
-                            print("Selecting " + str(n_active + 1) + "th varieble: ")
-                            print("Correlations: " + str(np.round(u, 4)))
-                            print("Test statistics: " + str(round(test_stats, 4)))
-                        
-                        if testing_stop:
-                            if test_stats < 0:
-                                if testing_verbose:
-                                    print("Not enough samples!")
-                                return alphas, active, coefs.T, test_result
-                    else:
-                        test_result[n_active + 1] = [0, 0]
+                if testing_verbose:
+                    print(f"Feature {n_active+1} | T: {test_stats:.4f} | Target: {z_critical:.4f}")
+                
+                if testing_stop and test_stats < z_critical:
+                    return alphas, active, coefs.T, test_result
 
                 C_ = Cov[C_idx]
-
-                if positive:
-                    C = C_
-                else:
-                    C = np.fabs(C_)
+                C = np.fabs(C_)
             else:
                 C = 0.
-
         if return_path:
             alpha = alphas[n_iter, np.newaxis]
             coef = coefs[n_iter]
