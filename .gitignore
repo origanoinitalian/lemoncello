@@ -70,3 +70,12 @@ fabric.properties
 
 # Pycharm
 .idea
+
+.json
+.python-version
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
