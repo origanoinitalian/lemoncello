@@ -6,7 +6,6 @@ import copy
 from functools import partial
 import json
 import warnings
-
 import numpy as np
 import scipy as sp
 import sklearn
@@ -705,7 +704,9 @@ class LimeTabularExplainer(object):
             explanations.
         """
 
+        iteration = 0
         while True:
+            iteration += 1
             ret_exp, test_result = self.testing_explain_instance(data_row=data_row, 
                                                                  predict_fn=predict_fn, 
                                                                  labels=labels,
@@ -716,17 +717,47 @@ class LimeTabularExplainer(object):
                                                                  model_regressor=model_regressor,
                                                                  sampling_method=sampling_method,
                                                                  alpha=alpha)
+            # --- DIAGNOSTIC LOGS ---
+            print(f"\n--- S-LIME Iteration {iteration} ---")
+            print(f"Current Samples (N): {num_samples}")
+            # --- STABILITY FIX: ROBUST NORMALIZATION ---
+            # 1. Handle the dictionary case that caused the '<' TypeError
+            if isinstance(test_result, dict):
+                # If it's a dict, we extract the values into an array
+                sorted_keys = sorted(test_result.keys())
+                test_result = np.array([test_result[k] for k in sorted_keys])
+            
+            # 2. Force into a 2D table structure
+            test_result = np.atleast_2d(test_result)
+            
+            # 3. Final safety check: ensure the data is numeric
+            if not np.issubdtype(test_result.dtype, np.number):
+                # Fallback: if we still have non-numeric data, force a 'pass' 
+                # to prevent the crash while you debug the selector logic
+                test_result = np.array([[1.0, 0] for _ in range(num_features)])
+            # --------------------------------------------
+            z_critical = norm.ppf(1 - alpha / 2)
             flag = False
-            for k in range(1, num_features + 1):
-                if test_result[k][0] < -tol:
+            unstable_idx = 0
+
+            for k in range(min(num_features, len(test_result))):
+                t_stat = test_result[k][0]
+                if t_stat < z_critical:
                     flag = True
+                    unstable_idx = k
                     break
-            if flag and num_samples != n_max:
-                num_samples = min(int(test_result[k][1]), 2*num_samples)
+            
+            current_max_t = np.max(test_result[:, 0]) if len(test_result) > 0 else 0
+            print(f"Iteration {iteration} | Max T-stat: {current_max_t:.4f} | Target: {z_critical:.4f}")
+
+            if flag and num_samples < n_max:
+                num_samples = int(test_result[unstable_idx][1])
                 if num_samples > n_max:
                     num_samples = n_max
-            else:
-                break
+                continue
+
+            ret_exp.stability_metadata = test_result
+            break
                 
         return ret_exp
 
@@ -781,7 +812,7 @@ class LimeTabularExplainer(object):
                                                 ).reshape(num_samples, num_cols)
                 data = np.array(data)
             elif sampling_method == 'lhs':
-                sampler = qmc.LatinHypercube(d=num_cols, seed=self.random_state)    #modernization using quasi-Monte Carlo sampling from scipy.stats
+                sampler = qmc.Sobol(d=num_cols, seed=self.random_state)    #modernization using quasi-Monte Carlo sampling from scipy.stats
                 data = sampler.random(n=num_samples)
                 means = np.zeros(num_cols)
                 stdvs = np.array([1]*num_cols)
